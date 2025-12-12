@@ -7,12 +7,16 @@ const stream = require('stream');
 const cors = require('cors');
 
 const app = express();
-
-// CORS configuration
 app.use(cors({
-  origin: ['http://localhost:3000', 'https://qrify.site', 'http://127.0.0.1:5500'],
+  origin: [
+    'http://localhost:3000',
+    'http://127.0.0.1:5500',
+    'https://qrify.site',
+    'https://www.qrify.site'  // ← add this
+  ],
   credentials: true
 }));
+
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
