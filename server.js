@@ -104,13 +104,25 @@ app.post('/api/stories', async (req, res) => {
   }
 });
 
-// STREAM IMAGE
-app.get('/api/images/:imageId', async (req, res) => {
+// STREAM IMAGE (Modified)
+app.get('/api/images/:id', async (req, res) => {
   let fileId;
+
   try {
-    fileId = new ObjectId(req.params.imageId);
+    // Try treat as ObjectId first
+    fileId = new ObjectId(req.params.id);
   } catch {
-    return res.status(400).json({ error: 'Invalid image ID' });
+    // If invalid, treat as storyId
+    try {
+      const story = await storiesCollection.findOne({ storyId: req.params.id });
+      if (!story || !story.imageId) {
+        return res.status(404).json({ error: 'Image not found' });
+      }
+      fileId = story.imageId;
+    } catch (err) {
+      console.error('❌ Error finding story by storyId:', err);
+      return res.status(500).json({ error: 'Server error' });
+    }
   }
 
   try {
