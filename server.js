@@ -7,16 +7,17 @@ const stream = require('stream');
 const cors = require('cors');
 
 const app = express();
+
+// ✅ CORS configuration
 app.use(cors({
   origin: [
     'http://localhost:3000',
     'http://127.0.0.1:5500',
     'https://qrify.site',
-    'https://www.qrify.site'  // ← add this
+    'https://www.qrify.site'
   ],
   credentials: true
 }));
-
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -40,11 +41,10 @@ let db, bucket, storiesCollection;
     db = client.db(DB_NAME);
     bucket = new GridFSBucket(db, { bucketName: 'storyImages' });
     storiesCollection = db.collection('stories');
-    
+
     await storiesCollection.createIndex({ storyId: 1 }, { unique: true });
-    
+
     console.log('✅ Connected to MongoDB');
-    console.log('📦 Database:', DB_NAME);
   } catch (err) {
     console.error('❌ MongoDB connection error:', err);
     process.exit(1);
@@ -53,11 +53,7 @@ let db, bucket, storiesCollection;
 
 // Health check
 app.get('/', (req, res) => {
-  res.json({
-    status: '✅ running',
-    message: 'QRify Backend API',
-    version: '1.0'
-  });
+  res.json({ status: '✅ running', message: 'QRify Backend API', version: '1.0' });
 });
 
 // CREATE STORY
@@ -65,12 +61,7 @@ app.post('/api/stories', async (req, res) => {
   try {
     const { imageData } = req.body;
 
-    if (!imageData) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'No image data provided' 
-      });
-    }
+    if (!imageData) return res.status(400).json({ success: false, error: 'No image data provided' });
 
     const storyId = `qrs_${nanoid(10)}`;
     console.log('📤 Saving story:', storyId);
@@ -78,6 +69,7 @@ app.post('/api/stories', async (req, res) => {
     const base64Data = imageData.replace(/^data:image\/\w+;base64,/, '');
     const buffer = Buffer.from(base64Data, 'base64');
 
+    // Stream to GridFS
     const readStream = new stream.PassThrough();
     readStream.end(buffer);
 
@@ -88,68 +80,36 @@ app.post('/api/stories', async (req, res) => {
 
     await new Promise((resolve, reject) => {
       readStream.pipe(uploadStream)
-        .on('error', reject)
+        .on('error', err => {
+          console.error('❌ GridFS Upload Error:', err);
+          reject(err);
+        })
         .on('finish', resolve);
     });
 
     const fileId = uploadStream.id;
 
-    await storiesCollection.insertOne({
+    if (!fileId) throw new Error('File upload failed, fileId null');
+
+    // Save story in collection
+    const storyDoc = {
       storyId,
       imageId: fileId,
       createdAt: new Date(),
       views: 0,
       contentType: 'image/png',
       fileSize: buffer.length
-    });
+    };
 
-    console.log('✅ Story saved:', storyId);
+    await storiesCollection.insertOne(storyDoc);
 
-    return res.status(201).json({
-      success: true,
-      storyId,
-      imageId: fileId.toString()
-    });
+    console.log('✅ Story saved in DB:', { storyId, fileId });
+
+    return res.status(201).json({ success: true, storyId, imageId: fileId.toString() });
 
   } catch (err) {
     console.error('❌ Create story error:', err);
-    return res.status(500).json({ 
-      success: false,
-      error: 'Failed to create story',
-      details: err.message 
-    });
-  }
-});
-
-// GET STORY
-app.get('/api/stories/:storyId', async (req, res) => {
-  try {
-    const { storyId } = req.params;
-
-    const story = await storiesCollection.findOne({ storyId });
-
-    if (!story) {
-      return res.status(404).json({ success: false, error: 'Story not found' });
-    }
-
-    await storiesCollection.updateOne(
-      { storyId },
-      { $inc: { views: 1 } }
-    );
-
-    return res.json({
-      success: true,
-      story: {
-        storyId: story.storyId,
-        imageId: story.imageId.toString(),
-        createdAt: story.createdAt,
-        views: story.views + 1
-      }
-    });
-
-  } catch (err) {
-    console.error('❌ Get story error:', err);
-    return res.status(500).json({ success: false, error: 'Failed to retrieve story' });
+    return res.status(500).json({ success: false, error: 'Failed to create story', details: err.message });
   }
 });
 
@@ -159,22 +119,16 @@ app.get('/api/images/:imageId', async (req, res) => {
     const { imageId } = req.params;
     const fileId = new ObjectId(imageId);
 
-    const files = await db.collection('storyImages.files').findOne({ _id: fileId });
-    
-    if (!files) {
-      return res.status(404).json({ error: 'Image not found' });
-    }
+    const file = await db.collection('storyImages.files').findOne({ _id: fileId });
+    if (!file) return res.status(404).json({ error: 'Image not found' });
 
-    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Content-Type', file.contentType || 'image/png');
     res.setHeader('Cache-Control', 'public, max-age=31536000');
 
     const downloadStream = bucket.openDownloadStream(fileId);
-
-    downloadStream.on('error', (err) => {
+    downloadStream.on('error', err => {
       console.error('❌ Stream error:', err);
-      if (!res.headersSent) {
-        res.status(500).json({ error: 'Failed to stream image' });
-      }
+      if (!res.headersSent) res.status(500).json({ error: 'Failed to stream image' });
     });
 
     downloadStream.pipe(res);
@@ -185,23 +139,21 @@ app.get('/api/images/:imageId', async (req, res) => {
   }
 });
 
-// NEW ROUTE → REDIRECT TO REVEAL PAGE
+// VIEW → redirect to reveal page
 app.get('/view/:storyId', async (req, res) => {
   try {
     const { storyId } = req.params;
 
     const story = await storiesCollection.findOne({ storyId });
+    if (!story || !story.imageId) return res.status(404).send('Story or image not found');
 
-    if (!story) {
-      return res.status(404).send('Story not found');
-    }
-
-    const isLocal = req.hostname === 'localhost' || req.hostname === '127.0.0.1';
-    const siteBase = isLocal
+    const siteBase = (req.hostname === 'localhost' || req.hostname === '127.0.0.1')
       ? 'http://127.0.0.1:5500'
       : 'https://qrify.site';
 
-    return res.redirect(`${siteBase}/reveal.html?img=${story.imageId}`);
+    console.log('📌 Redirecting to reveal page for story:', storyId);
+
+    return res.redirect(`${siteBase}/reveal.html?img=${story.imageId.toString()}`);
 
   } catch (err) {
     console.error('❌ View Route Error:', err);
@@ -212,13 +164,9 @@ app.get('/view/:storyId', async (req, res) => {
 // Error handler
 app.use((err, req, res, next) => {
   console.error('❌ Server error:', err);
-  res.status(500).json({ 
-    success: false, 
-    error: 'Internal server error' 
-  });
+  res.status(500).json({ success: false, error: 'Internal server error' });
 });
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📡 http://localhost:${PORT}`);
 });
