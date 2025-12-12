@@ -5,10 +5,10 @@ const { MongoClient, GridFSBucket, ObjectId } = require('mongodb');
 const { nanoid } = require('nanoid');
 const stream = require('stream');
 const cors = require('cors');
+const path = require('path');
 
 const app = express();
 
-// ✅ CORS configuration
 app.use(cors({
   origin: [
     'http://localhost:3000',
@@ -41,9 +41,7 @@ let db, bucket, storiesCollection;
     db = client.db(DB_NAME);
     bucket = new GridFSBucket(db, { bucketName: 'storyImages' });
     storiesCollection = db.collection('stories');
-
     await storiesCollection.createIndex({ storyId: 1 }, { unique: true });
-
     console.log('✅ Connected to MongoDB');
   } catch (err) {
     console.error('❌ MongoDB connection error:', err);
@@ -60,7 +58,6 @@ app.get('/', (req, res) => {
 app.post('/api/stories', async (req, res) => {
   try {
     const { imageData } = req.body;
-
     if (!imageData) return res.status(400).json({ success: false, error: 'No image data provided' });
 
     const storyId = `qrs_${nanoid(10)}`;
@@ -69,7 +66,6 @@ app.post('/api/stories', async (req, res) => {
     const base64Data = imageData.replace(/^data:image\/\w+;base64,/, '');
     const buffer = Buffer.from(base64Data, 'base64');
 
-    // Stream to GridFS
     const readStream = new stream.PassThrough();
     readStream.end(buffer);
 
@@ -89,9 +85,6 @@ app.post('/api/stories', async (req, res) => {
 
     const fileId = uploadStream.id;
 
-    if (!fileId) throw new Error('File upload failed, fileId null');
-
-    // Save story in collection
     const storyDoc = {
       storyId,
       imageId: fileId,
@@ -104,9 +97,7 @@ app.post('/api/stories', async (req, res) => {
     await storiesCollection.insertOne(storyDoc);
 
     console.log('✅ Story saved in DB:', { storyId, fileId });
-
-    return res.status(201).json({ success: true, storyId, imageId: fileId.toString() });
-
+    return res.status(201).json({ success: true, storyId, imageId: fileId.toHexString() });
   } catch (err) {
     console.error('❌ Create story error:', err);
     return res.status(500).json({ success: false, error: 'Failed to create story', details: err.message });
@@ -115,10 +106,14 @@ app.post('/api/stories', async (req, res) => {
 
 // STREAM IMAGE
 app.get('/api/images/:imageId', async (req, res) => {
+  let fileId;
   try {
-    const { imageId } = req.params;
-    const fileId = new ObjectId(imageId);
+    fileId = new ObjectId(req.params.imageId);
+  } catch {
+    return res.status(400).json({ error: 'Invalid image ID' });
+  }
 
+  try {
     const file = await db.collection('storyImages.files').findOne({ _id: fileId });
     if (!file) return res.status(404).json({ error: 'Image not found' });
 
@@ -132,10 +127,21 @@ app.get('/api/images/:imageId', async (req, res) => {
     });
 
     downloadStream.pipe(res);
-
   } catch (err) {
     console.error('❌ Get image error:', err);
     return res.status(500).json({ error: 'Failed to retrieve image' });
+  }
+});
+
+// GET STORY INFO (optional for reveal page)
+app.get('/api/stories/:storyId', async (req, res) => {
+  try {
+    const story = await storiesCollection.findOne({ storyId: req.params.storyId });
+    if (!story) return res.status(404).json({ error: 'Story not found' });
+    res.json({ imageId: story.imageId.toHexString() });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
@@ -143,28 +149,17 @@ app.get('/api/images/:imageId', async (req, res) => {
 app.get('/view/:storyId', async (req, res) => {
   try {
     const { storyId } = req.params;
-
     const story = await storiesCollection.findOne({ storyId });
-    if (!story || !story.imageId) return res.status(404).send('Story or image not found');
+    if (!story || !story.imageId) return res.status(404).send('Story not found');
 
-    const siteBase = (req.hostname === 'localhost' || req.hostname === '127.0.0.1')
-      ? 'http://127.0.0.1:5500'
-      : 'https://qrify.site';
+    const siteBase = 'https://qrify.site'; // static reveal.html location
+    console.log('📌 Redirecting to reveal page for story:', storyId, 'with imageId:', story.imageId.toHexString());
 
-    console.log('📌 Redirecting to reveal page for story:', storyId);
-
-    return res.redirect(`${siteBase}/reveal.html?img=${story.imageId.toString()}`);
-
+    return res.redirect(`${siteBase}/reveal.html?img=${story.imageId.toHexString()}`);
   } catch (err) {
     console.error('❌ View Route Error:', err);
     res.status(500).send('Internal Server Error');
   }
-});
-
-// Error handler
-app.use((err, req, res, next) => {
-  console.error('❌ Server error:', err);
-  res.status(500).json({ success: false, error: 'Internal server error' });
 });
 
 app.listen(PORT, () => {
