@@ -6,34 +6,29 @@ const { nanoid } = require('nanoid');
 // Save story
 router.post('/', async (req, res) => {
   try {
-    console.log('📥 Received story save request');
     const { storyId, imageData } = req.body;
-    
     if (!imageData) {
       return res.status(400).json({ error: 'No image data provided' });
     }
-    
-    // Use provided storyId or generate new one
+
     const finalStoryId = storyId || 'qrs_' + nanoid(8);
-    
-    const story = new Story({ 
-      storyId: finalStoryId, 
-      imageData 
-    });
-    
-    await story.save();
-    console.log('✅ Story saved:', finalStoryId);
-    
-    res.json({ 
-      success: true,
-      storyId: finalStoryId 
-    });
+
+    const story = new Story({ storyId: finalStoryId, imageData });
+
+    try {
+      await story.save();
+    } catch (err) {
+      // FIX 3: Duplicate storyId
+      if (err.code === 11000) {
+        return res.json({ success: true, storyId: finalStoryId });
+      }
+      throw err;
+    }
+
+    res.json({ success: true, storyId: finalStoryId });
+
   } catch (err) {
-    console.error('❌ Save error:', err);
-    res.status(500).json({ 
-      error: 'Failed to save story',
-      details: err.message 
-    });
+    res.status(500).json({ error: 'Failed to save story', details: err.message });
   }
 });
 
